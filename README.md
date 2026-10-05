@@ -14,8 +14,24 @@ A minimal personal AI chat app built on **Cloudflare Pages + D1 + @ant-design/x*
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/api/chats` | Chat list (for `<Conversations>`) |
-| GET | `/api/chats/:id` | History messages of a chat (for `<Bubble.List>`) |
-| POST | `/api/chat` | Body `{ chatId, message }`; persists the user question, streams from the upstream, then persists the full assistant reply asynchronously via `waitUntil()` |
+| GET | `/api/chats/:id` | A chat's settings + history messages (for `<Bubble.List>`) |
+| POST | `/api/chat` | Body `{ chatId, message, ...settings }`; persists the user question, streams from the upstream, then persists the full assistant reply asynchronously via `waitUntil()` |
+| POST | `/api/chats/:id/duplicate` | Fork a chat: copy its settings and full history into a new chat |
+
+### Editing a question and forking
+
+- **Empty system prompt** — `systemPrompt` may be left empty. When it is, the
+  request is sent with *no* `system` message at all (the app no longer injects a
+  built-in default; new chats simply start pre-filled with the suggested prompt).
+- **Edit a question & regenerate** — passing `editMessageId` (a user message row
+  id) to `POST /api/chat` rewrites that question in place, deletes every message
+  after it in the same chat, and generates a fresh reply from that turn onward.
+  In the UI each question bubble has an **编辑** action; confirming rewrites the
+  turn (the last answer also has a **重新生成** action that repeats the same
+  question).
+- **Fork a chat** — the conversation list's per-item menu has **复制对话**, which
+  calls `POST /api/chats/:id/duplicate` and opens the copy. The fork is a full
+  independent snapshot (settings + every message, including reasoning chains).
 
 ## Getting started
 
@@ -110,6 +126,20 @@ npm run db:init:remote
 ```
 
 This runs `schema.sql` against the production D1 database (safe to re-run).
+
+> **Upgrading a database created before per-chat settings existed?**
+> `CREATE TABLE IF NOT EXISTS` does not add columns to tables that already
+> exist, and the `ALTER TABLE` migration statements at the bottom of
+> `schema.sql` are intentionally commented out to keep re-runs safe. Run them
+> once against each existing database (local and remote) before deploying the
+> new Functions:
+>
+> ```bash
+> npx wrangler d1 execute cloud-ai-chat --remote --command "ALTER TABLE chats    ADD COLUMN settings  TEXT;"
+> npx wrangler d1 execute cloud-ai-chat --remote --command "ALTER TABLE messages ADD COLUMN reasoning TEXT;"
+> ```
+>
+> A fresh database (A3 / B2 below) already includes both columns.
 
 #### A4. Set the production secret
 
@@ -211,10 +241,11 @@ variables take effect. The site is live at `https://<project>.pages.dev`.
 
 ```
 functions/
-  types.d.ts              # global Env type
-  api/chat.ts             # POST /api/chat
-  api/chats/index.ts      # GET  /api/chats
-  api/chats/[id].ts       # GET  /api/chats/:id
+  types.d.ts                     # global Env type
+  api/chat.ts                    # POST /api/chat (send / edit+regenerate)
+  api/chats/index.ts             # GET  /api/chats
+  api/chats/[id].ts              # GET  /api/chats/:id
+  api/chats/[id]/duplicate.ts    # POST /api/chats/:id/duplicate (fork)
 src/App.tsx               # single-file page: chat list on the left, bubble stream + input on the right
 schema.sql                # D1 schema
 wrangler.toml             # Pages / D1 / vars config

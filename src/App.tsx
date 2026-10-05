@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bubble, Conversations, Sender, XProvider } from '@ant-design/x';
 import type { BubbleItemType, BubbleListProps, ConversationsProps } from '@ant-design/x';
 import {
+  CopyOutlined,
+  EditOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   PlusOutlined,
+  ReloadOutlined,
   RobotOutlined,
   SettingOutlined,
   UserOutlined,
@@ -28,7 +33,7 @@ interface Message {
   id: string;
   role: Role;
   content: string;
-  reasoning?: string; // thinking chain; streamed live but not persisted
+  reasoning?: string; // thinking chain; streamed live and persisted per message
 }
 
 interface Chat {
@@ -46,11 +51,12 @@ interface ChatSettings {
   topP: number;
 }
 
-// Placeholder shown in the System Prompt field; the same text is the backend default.
+// Suggested system prompt; new chats start with it. Clearing the field is allowed
+// and means the request is sent with no system message at all.
 const DEFAULT_SYSTEM_PROMPT = '你是一个乐于助人的 AI 助手，回答尽量简洁、准确。';
 
 const DEFAULT_SETTINGS: ChatSettings = {
-  systemPrompt: '',
+  systemPrompt: DEFAULT_SYSTEM_PROMPT,
   contextTokens: 4000,
   thinking: false,
   reasoningEffort: 'low',
@@ -153,7 +159,14 @@ export default function App() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [settings, setSettings] = useState<ChatSettings>(DEFAULT_SETTINGS);
+  const [collapsed, setCollapsed] = useState(false);
+  // id of the message currently open in the inline editor, if any.
+  const [editingId, setEditingId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Mirror of activeId for async callbacks, plus a sequence number so a stale
+  // post-send refresh can never clobber a newer turn.
+  const activeIdRef = useRef(activeId);
+  const streamSeq = useRef(0);
 
   const loadChats = useCallback(async () => {
     try {
@@ -170,7 +183,7 @@ export default function App() {
     void loadChats();
   }, [loadChats]);
 
-  // Load history messages when switching chats.
+  // Load per-chat settings + history messages when switching chats.
   useEffect(() => {
     let alive = true;
     setMessages([]);
@@ -179,14 +192,23 @@ export default function App() {
         const res = await fetch(`/api/chats/${activeId}`);
         if (!res.ok) return;
         const data = (await res.json()) as {
-          messages?: Array<{ id: number; role: string; content: string }>;
+          settings?: Partial<ChatSettings> | null;
+          messages?: Array<{
+            id: number;
+            role: string;
+            content: string;
+            reasoning?: string | null;
+          }>;
         };
         if (!alive) return;
+        // A chat that has never been configured returns null -> use defaults.
+        setSettings({ ...DEFAULT_SETTINGS, ...(data.settings ?? {}) });
         setMessages(
           (data.messages ?? []).map((m) => ({
             id: String(m.id),
             role: m.role === 'user' ? 'user' : 'ai',
             content: m.content,
+            reasoning: m.reasoning ?? undefined,
           })),
         );
       } catch {
@@ -198,10 +220,43 @@ export default function App() {
     };
   }, [activeId]);
 
+  // Keep the ref in sync so late async work knows which chat is on screen, and
+  // drop any in-progress inline edit when the chat changes.
+  useEffect(() => {
+    activeIdRef.current = activeId;
+    setEditingId(null);
+  }, [activeId]);
+
+  // Re-read a chat's messages from the server. Used after a stream so the UI
+  // picks up the real row ids, which editing / regenerating needs.
+  const syncMessages = useCallback(async (chatId: string, seq: number) => {
+    try {
+      const res = await fetch(`/api/chats/${chatId}`);
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        messages?: Array<{ id: number; role: string; content: string; reasoning?: string | null }>;
+      };
+      // Ignore if the user switched chats or started another turn meanwhile.
+      if (activeIdRef.current !== chatId || streamSeq.current !== seq) return;
+      setMessages(
+        (data.messages ?? []).map((m) => ({
+          id: String(m.id),
+          role: m.role === 'user' ? 'user' : 'ai',
+          content: m.content,
+          reasoning: m.reasoning ?? undefined,
+        })),
+      );
+    } catch {
+      /* keep whatever is on screen */
+    }
+  }, []);
+
   const onNew = useCallback(() => {
     abortRef.current?.abort();
     setMessages([]);
     setInput('');
+    setEditingId(null);
+    setSettings(DEFAULT_SETTINGS);
     setActiveId(uid());
   }, []);
 
@@ -212,19 +267,42 @@ export default function App() {
 
   const onStop = useCallback(() => abortRef.current?.abort(), []);
 
-  const onSend = useCallback(
-    async (raw: string) => {
-      const text = raw.trim();
-      if (!text || loading) return;
+  // Shared streaming path for a fresh message and for an edited one. When
+  // `editMessageId` is set, that earlier question is rewritten and everything
+  // after it is discarded so the reply is regenerated from that turn.
+  const runStream = useCallback(
+    async ({
+      chatId,
+      text,
+      editMessageId,
+    }: {
+      chatId: string;
+      text: string;
+      editMessageId?: number;
+    }) => {
+      if (loading) return;
 
-      const chatId = activeId;
-      const userMsg: Message = { id: uid(), role: 'user', content: text };
       const aiMsg: Message = { id: uid(), role: 'ai', content: '' };
+      if (editMessageId !== undefined) {
+        // Truncate locally to the edited turn, then append the fresh reply bubble.
+        setMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === String(editMessageId));
+          const head = idx >= 0 ? prev.slice(0, idx + 1) : prev;
+          const edited = head.map((m) =>
+            m.id === String(editMessageId) ? { ...m, content: text, reasoning: undefined } : m,
+          );
+          return [...edited, aiMsg];
+        });
+      } else {
+        const userMsg: Message = { id: uid(), role: 'user', content: text };
+        setMessages((prev) => [...prev, userMsg, aiMsg]);
+      }
 
-      setMessages((prev) => [...prev, userMsg, aiMsg]);
       setInput('');
+      setEditingId(null);
       setLoading(true);
 
+      const seq = ++streamSeq.current;
       const ac = new AbortController();
       abortRef.current = ac;
 
@@ -235,6 +313,7 @@ export default function App() {
           body: JSON.stringify({
             chatId,
             message: text,
+            ...(editMessageId !== undefined ? { editMessageId } : {}),
             systemPrompt: settings.systemPrompt,
             contextTokens: settings.contextTokens,
             temperature: settings.temperature,
@@ -275,15 +354,74 @@ export default function App() {
         setLoading(false);
         abortRef.current = null;
         void loadChats(); // Refresh titles / ordering.
+        void syncMessages(chatId, seq); // Pick up real row ids so editing works.
       }
     },
-    [activeId, loading, loadChats, settings],
+    [loading, loadChats, settings, syncMessages],
+  );
+
+  const onSend = useCallback(
+    (raw: string) => {
+      const text = raw.trim();
+      if (text) void runStream({ chatId: activeId, text });
+    },
+    [activeId, runStream],
+  );
+
+  // Confirm an inline edit: rewrite that question and regenerate from it onward.
+  const onEditQuestion = useCallback(
+    (messageId: string, text: string) => {
+      const id = Number(messageId);
+      if (text && Number.isInteger(id)) {
+        void runStream({ chatId: activeId, text, editMessageId: id });
+      }
+    },
+    [activeId, runStream],
+  );
+
+  // Re-answer the most recent question as-is.
+  const onRegenerate = useCallback(() => {
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+    if (!lastUser) return;
+    const id = Number(lastUser.id);
+    if (Number.isInteger(id)) {
+      void runStream({ chatId: activeId, text: lastUser.content, editMessageId: id });
+    }
+  }, [activeId, messages, runStream]);
+
+  // Fork a chat: copy its settings and history into a new chat, then open it.
+  const onDuplicate = useCallback(
+    async (id: string) => {
+      try {
+        const res = await fetch(`/api/chats/${id}/duplicate`, { method: 'POST' });
+        if (!res.ok) return;
+        const data = (await res.json()) as { id?: string };
+        await loadChats();
+        if (data.id) setActiveId(data.id);
+      } catch {
+        /* ignore */
+      }
+    },
+    [loadChats],
   );
 
   const convItems: ConversationsProps['items'] = chats.map((c) => ({ key: c.id, label: c.title }));
 
+  // Per-conversation action menu: fork a chat by duplicating it.
+  const convMenu: ConversationsProps['menu'] = (chat) => ({
+    items: [{ key: 'duplicate', label: '复制对话', icon: <CopyOutlined /> }],
+    onClick: ({ key, domEvent }) => {
+      domEvent.stopPropagation();
+      if (key === 'duplicate') void onDuplicate(chat.key);
+    },
+  });
+
   const bubbleItems: BubbleItemType[] = messages.map((m, i) => {
     const isStreamingAi = loading && m.role === 'ai' && i === messages.length - 1;
+    const isLast = i === messages.length - 1;
+    // Only messages persisted with a numeric row id can be edited / regenerated.
+    const canEdit = m.role === 'user' && Number.isInteger(Number(m.id));
+    const canRegenerate = m.role === 'ai' && isLast && Number.isInteger(Number(m.id));
     return {
       key: m.id,
       role: m.role,
@@ -297,6 +435,27 @@ export default function App() {
       // panel itself signals progress.
       loading: isStreamingAi && !m.content && !m.reasoning,
       streaming: isStreamingAi && !!m.content,
+      // Questions are editable inline; confirming rewrites the turn and regenerates.
+      editable: canEdit
+        ? { editing: editingId === m.id, okText: '保存并重新生成', cancelText: '取消' }
+        : false,
+      onEditConfirm: canEdit ? (content: string) => onEditQuestion(m.id, content.trim()) : undefined,
+      onEditCancel: canEdit ? () => setEditingId(null) : undefined,
+      footer:
+        !loading && canEdit && editingId !== m.id ? (
+          <Button
+            type="text"
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => setEditingId(m.id)}
+          >
+            编辑
+          </Button>
+        ) : !loading && canRegenerate ? (
+          <Button type="text" size="small" icon={<ReloadOutlined />} onClick={onRegenerate}>
+            重新生成
+          </Button>
+        ) : undefined,
     };
   });
 
@@ -307,13 +466,23 @@ export default function App() {
         <Input.TextArea
           value={settings.systemPrompt}
           onChange={(e) => setSettings((s) => ({ ...s, systemPrompt: e.target.value }))}
-          placeholder={DEFAULT_SYSTEM_PROMPT}
+          placeholder="（留空则不发送 system prompt）"
           autoSize={{ minRows: 2, maxRows: 6 }}
           style={{ fontSize: 12 }}
         />
-        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-          留空则使用默认提示词
-        </Typography.Text>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            留空则不发送 system prompt
+          </Typography.Text>
+          {settings.systemPrompt.trim() !== DEFAULT_SYSTEM_PROMPT && (
+            <Typography.Link
+              style={{ fontSize: 11 }}
+              onClick={() => setSettings((s) => ({ ...s, systemPrompt: DEFAULT_SYSTEM_PROMPT }))}
+            >
+              恢复默认
+            </Typography.Link>
+          )}
+        </div>
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Typography.Text strong>深度思考</Typography.Text>
@@ -379,11 +548,16 @@ export default function App() {
         <Layout.Sider
           theme="light"
           width={280}
+          collapsible
+          collapsed={collapsed}
+          onCollapse={setCollapsed}
+          collapsedWidth={0}
+          trigger={null}
           style={{
             display: 'flex',
             flexDirection: 'column',
-            padding: 12,
-            borderInlineEnd: '1px solid #f0f0f0',
+            padding: collapsed ? 0 : 12,
+            borderInlineEnd: collapsed ? 'none' : '1px solid #f0f0f0',
             overflow: 'auto',
           }}
         >
@@ -391,6 +565,7 @@ export default function App() {
             items={convItems}
             activeKey={activeId}
             onActiveChange={(key) => onSelect(String(key))}
+            menu={convMenu}
             creation={{
               icon: <PlusOutlined />,
               label: '新建对话',
@@ -416,15 +591,25 @@ export default function App() {
                 justifyContent: 'space-between',
                 alignItems: 'center',
                 marginBottom: 6,
+                gap: 8,
               }}
             >
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {settings.thinking ? `深度思考 · ${settings.reasoningEffort}` : '深度思考已关闭'}
-                {' · '}temp {settings.temperature.toFixed(1)}
-                {' · '}top_p {settings.topP.toFixed(2)}
-                {' · '}ctx {settings.contextTokens}
-                {settings.systemPrompt.trim() ? ' · 自定义提示词' : ''}
-              </Typography.Text>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <Button
+                  type="text"
+                  size="small"
+                  aria-label={collapsed ? '展开对话列表' : '收起对话列表'}
+                  icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+                  onClick={() => setCollapsed((c) => !c)}
+                />
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {settings.thinking ? `深度思考 · ${settings.reasoningEffort}` : '深度思考已关闭'}
+                  {' · '}temp {settings.temperature.toFixed(1)}
+                  {' · '}top_p {settings.topP.toFixed(2)}
+                  {' · '}ctx {settings.contextTokens}
+                  {settings.systemPrompt.trim() ? '' : ' · 无 system prompt'}
+                </Typography.Text>
+              </div>
               <Popover
                 trigger="click"
                 placement="topRight"

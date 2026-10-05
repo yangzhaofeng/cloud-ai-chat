@@ -12,8 +12,15 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/chats` | 会话列表（供 `<Conversations>`） |
-| GET | `/api/chats/:id` | 某会话的历史消息（供 `<Bubble.List>`） |
-| POST | `/api/chat` | 入参 `{ chatId, message }`；落库用户问题 → 流式调用上游 → 用 `waitUntil()` 在流结束后异步落库完整回复 |
+| GET | `/api/chats/:id` | 某会话的设置 + 历史消息（供 `<Bubble.List>`） |
+| POST | `/api/chat` | 入参 `{ chatId, message, ...设置 }`；落库用户问题 → 流式调用上游 → 用 `waitUntil()` 在流结束后异步落库完整回复 |
+| POST | `/api/chats/:id/duplicate` | 复制（fork）某会话：把它的设置与全部历史复制成一个新会话 |
+
+### 修改提问、复制会话
+
+- **system prompt 可为空** —— `systemPrompt` 允许留空；留空时请求完全不发送 `system` 消息（不再自动注入内置默认提示词，新会话默认预填建议提示词，可清空）。
+- **修改某轮提问并重新生成** —— 给 `POST /api/chat` 传入 `editMessageId`（某个用户消息的行 id）会就地改写该提问、删除同一会话中它之后的所有消息，并从该轮重新生成回复。界面上每条提问气泡都有 **编辑**（确认后即改写该轮），最后一条回答还有 **重新生成**（用同样的问题再答一次）。
+- **复制会话** —— 会话列表每项的菜单里有 **复制对话**，调用 `POST /api/chats/:id/duplicate` 并打开副本。副本是完整独立的快照（设置 + 全部消息，含思考链）。
 
 ## 快速开始
 
@@ -99,6 +106,18 @@ npm run db:init:remote
 
 该命令会对线上 D1 执行 `schema.sql`（可重复执行）。
 
+> **要升级早于「按对话保存设置」功能的旧数据库？**
+> `CREATE TABLE IF NOT EXISTS` 不会给已存在的表新增列，而 `schema.sql` 末尾的
+> `ALTER TABLE` 迁移语句被刻意注释掉，以保证脚本可重复执行。请在部署新版 Functions
+> 之前，对每个已存在的数据库（本地与线上）各执行一次：
+>
+> ```bash
+> npx wrangler d1 execute cloud-ai-chat --remote --command "ALTER TABLE chats    ADD COLUMN settings  TEXT;"
+> npx wrangler d1 execute cloud-ai-chat --remote --command "ALTER TABLE messages ADD COLUMN reasoning TEXT;"
+> ```
+>
+> 全新数据库（下方 A3 / B2）已包含这两列。
+
 #### A4. 配置线上密钥
 
 `AI_API_KEY` 必须作为 secret，不能写进 `[vars]`：
@@ -182,10 +201,11 @@ Deployments → **Retry deployment**（或推送新提交）使绑定和变量�
 
 ```
 functions/
-  types.d.ts              # 全局 Env 类型
-  api/chat.ts             # POST /api/chat
-  api/chats/index.ts      # GET  /api/chats
-  api/chats/[id].ts       # GET  /api/chats/:id
+  types.d.ts                     # 全局 Env 类型
+  api/chat.ts                    # POST /api/chat（发送 / 编辑并重新生成）
+  api/chats/index.ts             # GET  /api/chats
+  api/chats/[id].ts              # GET  /api/chats/:id
+  api/chats/[id]/duplicate.ts    # POST /api/chats/:id/duplicate（复制/fork）
 src/App.tsx               # 单文件页面：左侧会话列表 + 右侧气泡流 + 输入框
 schema.sql                # D1 表结构
 wrangler.toml             # Pages / D1 / vars 配置
