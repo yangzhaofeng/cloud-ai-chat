@@ -51,6 +51,28 @@ local tooling). Pick one.
 
 Either way you first need a D1 database, its tables, and the `AI_API_KEY` secret.
 
+### Cloudflare build settings
+
+When you connect this repo in the Cloudflare dashboard (Create → Pages/Workers →
+Connect to Git), fill the build configuration with:
+
+| Setting | Value |
+| --- | --- |
+| Build command | `npm run build` |
+| Deploy command | `npx wrangler pages deploy dist` |
+| Build output directory | `dist` |
+| Root directory | *(leave default / repo root)* |
+
+Notes:
+
+- `npm run build` runs `npm run typecheck && vite build`, so TypeScript errors
+  fail the build instead of shipping.
+- On a **Pages** project with Git integration there is no separate *deploy
+  command* field — Cloudflare uploads `dist/` plus the `functions/` directory
+  itself. Use the deploy command above only where a deploy-command field exists
+  (Workers Builds), or on the CLI.
+- Locally, `npm run deploy` is just `npm run build && wrangler pages deploy dist`.
+
 ### Option A — Wrangler CLI
 
 `wrangler` is already a dev dependency, so `npx wrangler ...` just works.
@@ -139,7 +161,7 @@ Still on the D1 database page, open the **Console** tab and paste the contents o
 1. Push this repository to GitHub/GitLab.
 2. Dashboard → **Workers & Pages** → **Create** → **Pages** →
    **Connect to Git**, and pick the repo.
-3. Build settings:
+3. Build settings (see [Cloudflare build settings](#cloudflare-build-settings)):
    - **Framework preset**: `None` (or `Vite`)
    - **Build command**: `npm run build`
    - **Build output directory**: `dist`

@@ -12,11 +12,21 @@ const SSE_HEADERS: Record<string, string> = {
 };
 
 const SYSTEM_PROMPT = '你是一个乐于助人的 AI 助手，回答尽量简洁、准确。';
-const HISTORY_LIMIT = 20; // Maximum number of history messages sent to the model.
+const DEFAULT_CONTEXT_TOKENS = 4000; // Default budget for the conversation sent upstream.
+const MAX_CONTEXT_TOKENS = 100_000; // Upper bound accepted from the client.
+const MAX_HISTORY_MESSAGES = 200; // Hard cap on rows fetched before token trimming.
+
+type ReasoningEffort = 'low' | 'high' | 'max';
 
 interface ChatBody {
   chatId?: string;
   message?: string;
+  systemPrompt?: string;
+  contextTokens?: number;
+  temperature?: number;
+  top_p?: number;
+  thinking?: boolean;
+  reasoning_effort?: ReasoningEffort;
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUntil }) => {
@@ -54,17 +64,56 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
     .bind(chatId, message, now)
     .run();
 
-  // 3. Load recent context (including the user message just inserted).
+  // 3. Load recent context (including the user message just inserted). Fetch a
+  //    generous window, then trim from the oldest side to fit the token budget.
   const { results } = await env.DB.prepare(
     `SELECT role, content FROM (
         SELECT id, role, content FROM messages
          WHERE chat_id = ? ORDER BY id DESC LIMIT ?
      ) ORDER BY id ASC`,
   )
-    .bind(chatId, HISTORY_LIMIT)
+    .bind(chatId, MAX_HISTORY_MESSAGES)
     .all<{ role: string; content: string }>();
 
-  const messages = [{ role: 'system', content: SYSTEM_PROMPT }, ...(results ?? [])];
+  const systemContent = body.systemPrompt?.trim() || SYSTEM_PROMPT;
+  const contextTokens =
+    typeof body.contextTokens === 'number' && Number.isFinite(body.contextTokens)
+      ? clamp(body.contextTokens, 256, MAX_CONTEXT_TOKENS)
+      : DEFAULT_CONTEXT_TOKENS;
+
+  // Keep the newest messages that fit the budget; always keep at least the latest.
+  const history = results ?? [];
+  const kept: Array<{ role: string; content: string }> = [];
+  let used = estimateTokens(systemContent);
+  for (let i = history.length - 1; i >= 0; i--) {
+    const cost = estimateTokens(history[i].content);
+    if (kept.length > 0 && used + cost > contextTokens) break;
+    used += cost;
+    kept.unshift(history[i]);
+  }
+
+  const messages = [{ role: 'system', content: systemContent }, ...kept];
+
+  // Optional generation parameters forwarded to the upstream. Unknown fields are
+  // ignored by most OpenAI-compatible servers, so only send what the client set.
+  const upstreamBody: Record<string, unknown> = {
+    model: env.AI_MODEL,
+    messages,
+    stream: true,
+  };
+  if (typeof body.temperature === 'number' && Number.isFinite(body.temperature)) {
+    upstreamBody.temperature = clamp(body.temperature, 0, 2);
+  }
+  if (typeof body.top_p === 'number' && Number.isFinite(body.top_p)) {
+    upstreamBody.top_p = clamp(body.top_p, 0, 1);
+  }
+  if (typeof body.thinking === 'boolean') {
+    upstreamBody.thinking = { type: body.thinking ? 'enabled' : 'disabled' };
+    // reasoning_effort is only meaningful when thinking is on.
+    if (body.thinking && body.reasoning_effort) {
+      upstreamBody.reasoning_effort = body.reasoning_effort;
+    }
+  }
 
   // 4. Call the upstream with stream: true.
   let upstream: Response;
@@ -75,7 +124,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
         'Content-Type': 'application/json',
         Authorization: `Bearer ${env.AI_API_KEY}`,
       },
-      body: JSON.stringify({ model: env.AI_MODEL, messages, stream: true }),
+      body: JSON.stringify(upstreamBody),
     });
   } catch (err) {
     return json({ error: `upstream request failed: ${String(err)}` }, 502);
@@ -111,20 +160,30 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
           for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed.startsWith('data:')) continue;
-            const payload = trimmed.slice(5).trim();
-            if (!payload || payload === '[DONE]') continue;
+            const sseData = trimmed.slice(5).trim();
+            if (!sseData || sseData === '[DONE]') continue;
 
-            let delta = '';
+            let content = '';
+            let reasoning = '';
             try {
-              delta = JSON.parse(payload)?.choices?.[0]?.delta?.content ?? '';
+              const delta = JSON.parse(sseData)?.choices?.[0]?.delta;
+              content = delta?.content ?? '';
+              // Providers disagree on the field name for the thinking chain.
+              reasoning = delta?.reasoning_content ?? delta?.reasoning ?? '';
             } catch {
               continue; // skip keep-alive lines / incomplete chunks
             }
-            if (!delta) continue;
 
-            assistant += delta;
-            if (!aborted) {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ delta })}\n\n`));
+            // Forward the thinking chain separately; it is not persisted.
+            if (reasoning && !aborted) {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ reasoning })}\n\n`));
+            }
+
+            if (content) {
+              assistant += content;
+              if (!aborted) {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ delta: content })}\n\n`));
+              }
             }
           }
         }
@@ -152,6 +211,24 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env, waitUnti
 
   return new Response(stream, { headers: SSE_HEADERS });
 };
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+// Rough token estimate, tuned to DeepSeek's guidance: ~0.3 token per ASCII char,
+// ~0.6 token per non-ASCII (CJK) char. Good enough for trimming context; not a
+// real tokenizer, so other providers may differ somewhat.
+const TOKENS_PER_ASCII = 0.3;
+const TOKENS_PER_NON_ASCII = 0.6;
+
+function estimateTokens(text: string): number {
+  let tokens = 0;
+  for (const ch of text) {
+    tokens += ch.charCodeAt(0) > 0x7f ? TOKENS_PER_NON_ASCII : TOKENS_PER_ASCII;
+  }
+  return Math.ceil(tokens);
+}
 
 function makeTitle(message: string): string {
   const title = message.replace(/\s+/g, ' ').trim();

@@ -46,6 +46,23 @@ npm run dev         # http://localhost:5173，/api 代理到 8788
 
 两种方式都需要先准备好：D1 数据库、表结构、`AI_API_KEY` 密钥。
 
+### Cloudflare 构建设置
+
+在控制台里连接本仓库时（Create → Pages/Workers → Connect to Git），构建设置按下表填写：
+
+| 设置项 | 值 |
+| --- | --- |
+| Build command（构建命令） | `npm run build` |
+| Deploy command（部署命令） | `npx wrangler pages deploy dist` |
+| Build output directory（输出目录） | `dist` |
+| Root directory（根目录） | *留默认 / 仓库根目录* |
+
+说明：
+
+- `npm run build` = `npm run typecheck && vite build`，因此类型错误会让构建失败，而不会把有问题的产物发上线。
+- **Pages** 项目使用 Git 集成时并没有单独的 *Deploy command* 字段——Cloudflare 会自行上传 `dist/` 以及 `functions/` 目录。上面的部署命令仅用于控制台里存在该字段的场景（Workers Builds），或在命令行使用。
+- 本地 `npm run deploy` 等价于 `npm run build && wrangler pages deploy dist`。
+
 ### 方式 A —— Wrangler 命令行
 
 `wrangler` 已是开发依赖，直接用 `npx wrangler ...` 即可。
@@ -121,7 +138,7 @@ npm run deploy
 
 1. 把仓库推到 GitHub/GitLab。
 2. 控制台 → **Workers & Pages** → **Create** → **Pages** → **Connect to Git**，选择仓库。
-3. 构建设置：
+3. 构建设置（详见 [Cloudflare 构建设置](#cloudflare-构建设置)）：
    - **Framework preset**：`None`（或 `Vite`）
    - **Build command**：`npm run build`
    - **Build output directory**：`dist`
