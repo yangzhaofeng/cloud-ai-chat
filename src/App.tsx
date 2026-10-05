@@ -12,6 +12,7 @@ import {
   Button,
   Collapse,
   Input,
+  InputNumber,
   Layout,
   Popover,
   Segmented,
@@ -354,14 +355,16 @@ export default function App() {
           onChange={(v) => setSettings((s) => ({ ...s, topP: v }))}
         />
       </div>
-      <div>
-        <Typography.Text strong>上下文上限: {settings.contextTokens} tokens</Typography.Text>
-        <Slider
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <Typography.Text strong>上下文上限</Typography.Text>
+        <InputNumber
           min={1000}
-          max={32000}
+          max={1000000}
           step={1000}
           value={settings.contextTokens}
-          onChange={(v) => setSettings((s) => ({ ...s, contextTokens: v }))}
+          onChange={(v) => setSettings((s) => ({ ...s, contextTokens: v ?? 1000 }))}
+          addonAfter="tokens"
+          style={{ width: '100%' }}
         />
         <Typography.Text type="secondary" style={{ fontSize: 11 }}>
           按估算 token 裁剪历史，超出时从最早的对话开始丢弃

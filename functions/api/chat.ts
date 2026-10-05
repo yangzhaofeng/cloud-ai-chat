@@ -13,8 +13,8 @@ const SSE_HEADERS: Record<string, string> = {
 
 const SYSTEM_PROMPT = '你是一个乐于助人的 AI 助手，回答尽量简洁、准确。';
 const DEFAULT_CONTEXT_TOKENS = 4000; // Default budget for the conversation sent upstream.
-const MAX_CONTEXT_TOKENS = 100_000; // Upper bound accepted from the client.
-const MAX_HISTORY_MESSAGES = 200; // Hard cap on rows fetched before token trimming.
+const MAX_CONTEXT_TOKENS = 1_000_000; // Upper bound accepted from the client.
+const MAX_HISTORY_MESSAGES = 1000; // Hard cap on rows fetched before token trimming.
 
 type ReasoningEffort = 'low' | 'high' | 'max';
 
