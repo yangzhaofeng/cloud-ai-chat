@@ -7,7 +7,7 @@
 - 存储：Cloudflare D1（SQLite）
 - 模型：任意兼容 OpenAI `/chat/completions` 的服务（默认 DeepSeek），`stream: true` 流式返回
 
-## 三个接口
+## 接口
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -15,12 +15,14 @@
 | GET | `/api/chats/:id` | 某会话的设置 + 历史消息（供 `<Bubble.List>`） |
 | POST | `/api/chat` | 入参 `{ chatId, message, ...设置 }`；落库用户问题 → 流式调用上游 → 用 `waitUntil()` 在流结束后异步落库完整回复 |
 | POST | `/api/chats/:id/duplicate` | 复制（fork）某会话：把它的设置与全部历史复制成一个新会话 |
+| POST | `/api/chats/:id/delete` | 删除某会话及其全部消息 |
 
-### 修改提问、复制会话
+### 修改提问、复制与删除会话
 
 - **system prompt 可为空** —— `systemPrompt` 允许留空；留空时请求完全不发送 `system` 消息（不再自动注入内置默认提示词，新会话默认预填建议提示词，可清空）。
 - **修改某轮提问并重新生成** —— 给 `POST /api/chat` 传入 `editMessageId`（某个用户消息的行 id）会就地改写该提问、删除同一会话中它之后的所有消息，并从该轮重新生成回复。界面上每条提问气泡都有 **编辑**（确认后即改写该轮），最后一条回答还有 **重新生成**（用同样的问题再答一次）。
 - **复制会话** —— 会话列表每项的菜单里有 **复制对话**，调用 `POST /api/chats/:id/duplicate` 并打开副本。副本是完整独立的快照（设置 + 全部消息，含思考链）。
+- **删除会话** —— 同一菜单里有 **删除对话**，确认后调用 `POST /api/chats/:id/delete` 删除该会话及其全部消息；若删除的正是当前打开的会话，界面会切换到一个空白新会话。
 
 ## 快速开始
 
@@ -206,6 +208,7 @@ functions/
   api/chats/index.ts             # GET  /api/chats
   api/chats/[id].ts              # GET  /api/chats/:id
   api/chats/[id]/duplicate.ts    # POST /api/chats/:id/duplicate（复制/fork）
+  api/chats/[id]/delete.ts       # POST /api/chats/:id/delete（删除）
 src/App.tsx               # 单文件页面：左侧会话列表 + 右侧气泡流 + 输入框
 schema.sql                # D1 表结构
 wrangler.toml             # Pages / D1 / vars 配置

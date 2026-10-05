@@ -3,6 +3,7 @@ import { Bubble, Conversations, Sender, XProvider } from '@ant-design/x';
 import type { BubbleItemType, BubbleListProps, ConversationsProps } from '@ant-design/x';
 import {
   CopyOutlined,
+  DeleteOutlined,
   EditOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -19,6 +20,7 @@ import {
   Input,
   InputNumber,
   Layout,
+  Modal,
   Popover,
   Segmented,
   Slider,
@@ -405,16 +407,48 @@ export default function App() {
     [loadChats],
   );
 
+  // Delete a chat and its history. If it was the open chat, start a blank one.
+  const onDelete = useCallback(
+    async (id: string) => {
+      try {
+        const res = await fetch(`/api/chats/${id}/delete`, { method: 'POST' });
+        if (!res.ok && res.status !== 404) return;
+        await loadChats();
+        if (id === activeIdRef.current) onNew();
+      } catch {
+        /* ignore */
+      }
+    },
+    [loadChats, onNew],
+  );
+
   const convItems: ConversationsProps['items'] = chats.map((c) => ({ key: c.id, label: c.title }));
 
-  // Per-conversation action menu: fork a chat by duplicating it.
-  const convMenu: ConversationsProps['menu'] = (chat) => ({
-    items: [{ key: 'duplicate', label: '复制对话', icon: <CopyOutlined /> }],
-    onClick: ({ key, domEvent }) => {
-      domEvent.stopPropagation();
-      if (key === 'duplicate') void onDuplicate(chat.key);
-    },
-  });
+  // Per-conversation action menu: fork or delete a chat.
+  const convMenu: ConversationsProps['menu'] = (chat) => {
+    const title = chats.find((c) => c.id === chat.key)?.title ?? '该对话';
+    return {
+      items: [
+        { key: 'duplicate', label: '复制对话', icon: <CopyOutlined /> },
+        { key: 'delete', label: '删除对话', icon: <DeleteOutlined />, danger: true },
+      ],
+      onClick: ({ key, domEvent }) => {
+        domEvent.stopPropagation();
+        if (key === 'duplicate') {
+          void onDuplicate(chat.key);
+        } else if (key === 'delete') {
+          Modal.confirm({
+            title: '删除对话',
+            content: `确定删除「${title}」及其全部消息吗？此操作不可撤销。`,
+            okText: '删除',
+            okButtonProps: { danger: true },
+            cancelText: '取消',
+            onOk: () => onDelete(chat.key),
+          });
+        }
+      },
+    };
+  };
 
   const bubbleItems: BubbleItemType[] = messages.map((m, i) => {
     const isStreamingAi = loading && m.role === 'ai' && i === messages.length - 1;

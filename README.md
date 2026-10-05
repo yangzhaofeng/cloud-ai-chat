@@ -17,8 +17,9 @@ A minimal personal AI chat app built on **Cloudflare Pages + D1 + @ant-design/x*
 | GET | `/api/chats/:id` | A chat's settings + history messages (for `<Bubble.List>`) |
 | POST | `/api/chat` | Body `{ chatId, message, ...settings }`; persists the user question, streams from the upstream, then persists the full assistant reply asynchronously via `waitUntil()` |
 | POST | `/api/chats/:id/duplicate` | Fork a chat: copy its settings and full history into a new chat |
+| POST | `/api/chats/:id/delete` | Delete a chat and all of its messages |
 
-### Editing a question and forking
+### Editing, forking and deleting
 
 - **Empty system prompt** — `systemPrompt` may be left empty. When it is, the
   request is sent with *no* `system` message at all (the app no longer injects a
@@ -32,6 +33,9 @@ A minimal personal AI chat app built on **Cloudflare Pages + D1 + @ant-design/x*
 - **Fork a chat** — the conversation list's per-item menu has **复制对话**, which
   calls `POST /api/chats/:id/duplicate` and opens the copy. The fork is a full
   independent snapshot (settings + every message, including reasoning chains).
+- **Delete a chat** — the same menu has **删除对话**, which confirms and then
+  calls `POST /api/chats/:id/delete` to remove the chat and all of its messages.
+  If the deleted chat was open, the app switches to a blank new chat.
 
 ## Getting started
 
@@ -246,6 +250,7 @@ functions/
   api/chats/index.ts             # GET  /api/chats
   api/chats/[id].ts              # GET  /api/chats/:id
   api/chats/[id]/duplicate.ts    # POST /api/chats/:id/duplicate (fork)
+  api/chats/[id]/delete.ts       # POST /api/chats/:id/delete (delete)
 src/App.tsx               # single-file page: chat list on the left, bubble stream + input on the right
 schema.sql                # D1 schema
 wrangler.toml             # Pages / D1 / vars config
