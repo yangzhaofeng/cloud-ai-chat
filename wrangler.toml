@@ -1,0 +1,18 @@
+name = "cloud-ai-chat"
+compatibility_date = "2025-01-01"
+pages_build_output_dir = "dist"
+
+# D1 binding
+# Run `wrangler d1 create cloud-ai-chat` first, then paste the returned database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "cloud-ai-chat"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[vars]
+# Base URL of any OpenAI-compatible /chat/completions service (do not append /chat/completions).
+AI_BASE_URL = "https://api.deepseek.com"
+AI_MODEL = "deepseek-flash"
+# Note: do NOT put AI_API_KEY here.
+#   production: wrangler pages secret put AI_API_KEY
+#   local:      put it in .dev.vars (see .dev.vars.example)

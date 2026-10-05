@@ -1,0 +1,4 @@
+# Copy to .dev.vars and fill in the real values (.dev.vars is git-ignored).
+AI_API_KEY = "sk-your-key"
+AI_BASE_URL = "https://api.deepseek.com/v1"
+AI_MODEL = "deepseek-chat"
