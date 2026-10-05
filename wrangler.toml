@@ -6,8 +6,8 @@ pages_build_output_dir = "dist"
 # Run `wrangler d1 create cloud-ai-chat` first, then paste the returned database_id below.
 [[d1_databases]]
 binding = "DB"
-database_name = "cloud-ai-chat"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+#database_name = "cloud-ai-chat"
+database_id = "a41f9a11-a3ae-41be-ae61-37604e67a500"
 
 [vars]
 # Base URL of any OpenAI-compatible /chat/completions service (do not append /chat/completions).
